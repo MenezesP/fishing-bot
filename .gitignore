@@ -1,0 +1,11 @@
+venv/
+env/
+
+build/
+dist/
+*.spec
+
+__pycache__/
+*.pyc
+
+Thumbs.db
