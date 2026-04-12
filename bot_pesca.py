@@ -3,19 +3,18 @@ import pydirectinput
 import keyboard
 import time
 import sys
-import os
 import threading
 import tkinter as tk
 import ctypes
-from ctypes import wintypes
 
+# ==========================================
+# CONFIGURAÇÕES DO BOT
+# ==========================================
 TEMPO_PESCA_MINUTOS = 6
-INTERVALO_ANTI_AFK_SEGUNDOS = 45
-
 NOME_JANELA_JOGO = 'PokeMemories'
-IMG_AGUA = 'agua.png'
-NIVEL_CONFIANCA = 0.6  
 
+# Novas Teclas
+TECLA_MARCAR = 'f9'
 TECLA_INICIAR = 'f10'
 TECLA_PARAR = 'f11'
 
@@ -40,25 +39,27 @@ class Input(ctypes.Structure):
     _fields_ = [("type", ctypes.c_ulong), ("ii", Input_I)]
 
 def mover_rato_fisico(x, y):
-    """Injeta movimento absoluto no driver do rato (0 a 65535)."""
-    largura_ecra = ctypes.windll.user32.GetSystemMetrics(0)
-    altura_ecra = ctypes.windll.user32.GetSystemMetrics(1)
+    SM_CXVIRTUALSCREEN = 78
+    SM_CYVIRTUALSCREEN = 79
+    SM_XVIRTUALSCREEN = 76
+    SM_YVIRTUALSCREEN = 77
+
+    largura_ecra = ctypes.windll.user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+    altura_ecra = ctypes.windll.user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+    esquerda = ctypes.windll.user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+    topo = ctypes.windll.user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
     
-    x_calc = int(x * 65535 / largura_ecra)
-    y_calc = int(y * 65535 / altura_ecra)
+    x_calc = int(((x - esquerda) * 65535) / largura_ecra)
+    y_calc = int(((y - topo) * 65535) / altura_ecra)
 
     extra = ctypes.pointer(ctypes.c_ulong(0))
     ii_ = Input_I()
-    # 0x0001 = MOVE, 0x8000 = ABSOLUTE
-    ii_.mi = MouseInput(x_calc, y_calc, 0, 0x0001 | 0x8000, 0, extra) 
-    comando = Input(ctypes.c_ulong(0), ii_) # 0 = INPUT_MOUSE
+    ii_.mi = MouseInput(x_calc, y_calc, 0, 0x0001 | 0x8000 | 0x4000, 0, extra) 
+    comando = Input(ctypes.c_ulong(0), ii_)
     ctypes.windll.user32.SendInput(1, ctypes.pointer(comando), ctypes.sizeof(comando))
 
 def clicar_rato_fisico():
-    """Injeta um clique esquerdo no driver do rato."""
     extra = ctypes.pointer(ctypes.c_ulong(0))
-    
-    # 0x0002 = LEFTDOWN
     ii_down = Input_I()
     ii_down.mi = MouseInput(0, 0, 0, 0x0002, 0, extra)
     cmd_down = Input(ctypes.c_ulong(0), ii_down)
@@ -66,14 +67,12 @@ def clicar_rato_fisico():
     
     time.sleep(0.05)
     
-    # 0x0004 = LEFTUP
     ii_up = Input_I()
     ii_up.mi = MouseInput(0, 0, 0, 0x0004, 0, extra)
     cmd_up = Input(ctypes.c_ulong(0), ii_up)
     ctypes.windll.user32.SendInput(1, ctypes.pointer(cmd_up), ctypes.sizeof(cmd_up))
 
 def eh_administrador():
-    """Verifica se o script está a rodar com privilégios máximos."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
     except:
@@ -82,28 +81,37 @@ def eh_administrador():
 class BotPescaApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Bot Pesca v3")
-        self.root.geometry("280x180")
+        self.root.title("Bot Pesca v5 (Sem Imagens)")
+        self.root.geometry("280x220")
         self.root.attributes('-topmost', True) 
         self.root.configure(bg='#2c3e50')
         self.root.resizable(False, False)
 
         self.is_running = False
         self.primeira_pesca = True 
+        self.janela_alvo = None
+        
+        self.pos_agua_x = None
+        self.pos_agua_y = None
 
         # --- UI Elementos ---
         self.lbl_titulo = tk.Label(root, text="🐟 Poke Memories Bot", font=("Arial", 12, "bold"), bg='#2c3e50', fg='white')
         self.lbl_titulo.pack(pady=5)
         
-        # Alerta de Administrador
         if not eh_administrador():
             self.lbl_admin = tk.Label(root, text="⚠️ ABRE COMO ADMINISTRADOR!", font=("Arial", 9, "bold"), bg='#c0392b', fg='white')
             self.lbl_admin.pack(fill=tk.X)
 
-        self.lbl_status = tk.Label(root, text="Status: PARADO", font=("Arial", 10, "bold"), bg='#2c3e50', fg='#e74c3c')
-        self.lbl_status.pack(pady=2)
+        self.lbl_agua = tk.Label(root, text=f"💧 Água: Marcar local da água ({TECLA_MARCAR.upper()})", font=("Arial", 9, "bold"), bg='#2c3e50', fg='#f1c40f')
+        self.lbl_agua.pack(pady=2)
 
-        self.lbl_log = tk.Label(root, text="Aguardando comandos...", font=("Arial", 9), bg='#2c3e50', fg='#bdc3c7')
+        self.lbl_status = tk.Label(root, text="Status: PARADO", font=("Arial", 10, "bold"), bg='#2c3e50', fg='#e74c3c')
+        self.lbl_status.pack()
+
+        self.lbl_alvo = tk.Label(root, text="Alvo: Nenhum jogo focado", font=("Arial", 8), bg='#2c3e50', fg='#bdc3c7')
+        self.lbl_alvo.pack()
+
+        self.lbl_log = tk.Label(root, text="Aguardando marcação...", font=("Arial", 9), bg='#2c3e50', fg='#bdc3c7')
         self.lbl_log.pack(pady=5)
 
         # Botões
@@ -115,10 +123,8 @@ class BotPescaApp:
         self.btn_parar.grid(row=0, column=1, padx=5)
         frame_botoes.pack()
 
-        if not os.path.exists(IMG_AGUA):
-            self.atualizar_log("ERRO: agua.png não encontrada!")
-            self.lbl_status.config(text="ERRO DE IMAGEM", fg="red")
-
+        # Teclas Globais
+        keyboard.on_press_key(TECLA_MARCAR, lambda _: self.marcar_agua())
         keyboard.on_press_key(TECLA_INICIAR, lambda _: self.iniciar_bot())
         keyboard.on_press_key(TECLA_PARAR, lambda _: self.parar_bot())
 
@@ -130,99 +136,93 @@ class BotPescaApp:
         print(f"[Log] {mensagem}")
         self.root.after(0, self.lbl_log.config, {"text": mensagem})
 
+    def marcar_agua(self):
+        if not self.is_running:
+            self.pos_agua_x, self.pos_agua_y = pyautogui.position()
+            mensagem = f"💧 Água: ({self.pos_agua_x}, {self.pos_agua_y})"
+            self.root.after(0, self.lbl_agua.config, {"text": mensagem, "fg": "#3498db"})
+            self.atualizar_log("Posição da água gravada com sucesso!")
+
     def iniciar_bot(self):
-        if not self.is_running and os.path.exists(IMG_AGUA):
+        if not self.is_running:
+            if self.pos_agua_x is None or self.pos_agua_y is None:
+                self.atualizar_log(f"ERRO: Tem que colocar o local da água! {TECLA_MARCAR.upper()}!")
+                return
+            
+            # Trava na janela que está ativa
+            janela_ativa = pyautogui.getActiveWindow()
+            if janela_ativa and NOME_JANELA_JOGO in janela_ativa.title:
+                self.janela_alvo = janela_ativa
+                self.root.after(0, self.lbl_alvo.config, {"text": f"Alvo: {janela_ativa.title} Travado!"})
+            else:
+                janelas = pyautogui.getWindowsWithTitle(NOME_JANELA_JOGO)
+                if janelas:
+                    self.janela_alvo = janelas[0]
+                    self.root.after(0, self.lbl_alvo.config, {"text": f"Alvo: Jogo Padrão Travado!"})
+                else:
+                    self.atualizar_log("ERRO: Jogo não encontrado.")
+                    return
+
             self.is_running = True
             self.root.after(0, self.lbl_status.config, {"text": "Status: ATIVADO", "fg": "#2ecc71"})
-            self.atualizar_log("Bot ligado. A focar jogo...")
+            self.atualizar_log("Bot ligado. Iniciando pesca...")
 
     def parar_bot(self):
         if self.is_running:
             self.is_running = False
-            self.primeira_pesca = True  # Reseta para o próximo ciclo inicial
+            self.primeira_pesca = True 
+            self.janela_alvo = None
             self.root.after(0, self.lbl_status.config, {"text": "Status: PARADO", "fg": "#e74c3c"})
+            self.root.after(0, self.lbl_alvo.config, {"text": "Alvo: Liberado"})
             self.atualizar_log("Ciclo interrompido.")
 
-    def executar_anti_afk(self):
-        self.atualizar_log("Anti-AFK: A virar...")
-        pydirectinput.keyDown('ctrl')
-        pydirectinput.press('up')
-        time.sleep(0.3)
-        pydirectinput.press('down')
-        pydirectinput.keyUp('ctrl')
-
     def focar_janela_jogo(self):
-        self.atualizar_log(f"A focar '{NOME_JANELA_JOGO}'...")
+        self.atualizar_log(f"Focando o Alvo Travado...")
         try:
-            janelas = pyautogui.getWindowsWithTitle(NOME_JANELA_JOGO)
-            if janelas:
-                janela_jogo = janelas[0]
-                if janela_jogo.isMinimized:
-                    janela_jogo.restore()
-                janela_jogo.activate()
-                time.sleep(0.8) # Tempo maior para garantir que o Windows tirou a proteção
+            if self.janela_alvo:
+                if self.janela_alvo.isMinimized:
+                    self.janela_alvo.restore()
+                self.janela_alvo.activate()
+                time.sleep(0.8) 
                 return True
-            else:
-                self.atualizar_log("Erro: Jogo não encontrado.")
-                return False
+            return False
         except:
             return True 
-
-    def procurar_imagem(self, imagem, tentativas=3):
-        largura_ecra, altura_ecra = pyautogui.size()
-        regiao_segura = (int(largura_ecra*0.15), int(altura_ecra*0.20), int(largura_ecra*0.60), int(altura_ecra*0.60))
-        
-        self.atualizar_log("A procurar água...")
-        for tentativa in range(tentativas):
-            try:
-                posicao = pyautogui.locateCenterOnScreen(imagem, confidence=NIVEL_CONFIANCA, region=regiao_segura)
-                if posicao is not None:
-                    return posicao
-            except:
-                pass
-            time.sleep(0.4)
-        return None
 
     def rotina_pesca(self):
         if not self.focar_janela_jogo():
             return False
 
-        mover_rato_fisico(10, 10)
+        canto_x = self.janela_alvo.left + 10 if self.janela_alvo else 10
+        canto_y = self.janela_alvo.top + 10 if self.janela_alvo else 10
+        mover_rato_fisico(canto_x, canto_y)
         time.sleep(0.2)
 
-        posicao_agua = self.procurar_imagem(IMG_AGUA)
+        # Agora usamos diretamente a posição gravada pela tecla F9
+        x, y = self.pos_agua_x, self.pos_agua_y
         
-        if posicao_agua:
-            x, y = int(posicao_agua.x), int(posicao_agua.y)
-            
-            # Se não for a primeira pesca, precisamos cancelar a pesca atual
-            if not self.primeira_pesca:
-                self.atualizar_log("Renovação: 'V' + Clique (Cancelar)...")
-                pydirectinput.press('v')
-                time.sleep(0.4) 
-                mover_rato_fisico(x, y)
-                time.sleep(0.3) 
-                clicar_rato_fisico()
-                
-                time.sleep(1.0)
-            else:
-                self.primeira_pesca = False
-
-            # --- AÇÃO PRINCIPAL (Lança a pesca) ---
-            self.atualizar_log("Ação: 'V' + Clique (Pescar)...")
+        if not self.primeira_pesca:
+            self.atualizar_log("Renovação: 'V' + Clique (Cancelar)...")
             pydirectinput.press('v')
             time.sleep(0.4) 
             mover_rato_fisico(x, y)
             time.sleep(0.3) 
             clicar_rato_fisico()
-            
-            time.sleep(0.3)
-            mover_rato_fisico(10, 10)
-            
-            return True
+            time.sleep(1.0)
         else:
-            self.atualizar_log("Falha: Água não encontrada.")
-            return False
+            self.primeira_pesca = False
+
+        self.atualizar_log("Ação: 'V' + Clique (Pescar)...")
+        pydirectinput.press('v')
+        time.sleep(0.4) 
+        mover_rato_fisico(x, y)
+        time.sleep(0.3) 
+        clicar_rato_fisico()
+        
+        time.sleep(0.3)
+        mover_rato_fisico(canto_x, canto_y)
+        
+        return True
 
     def loop_principal_bot(self):
         while True:
@@ -238,12 +238,8 @@ class BotPescaApp:
                         time.sleep(1)
                         tempo_decorrido += 1
                         
-                        if tempo_decorrido % INTERVALO_ANTI_AFK_SEGUNDOS == 0 and self.is_running:
-                            self.focar_janela_jogo() 
-                            self.executar_anti_afk()
-                            self.atualizar_log("Pescando...")
                 else:
-                    self.atualizar_log("Nova tentativa em 3s...")
+                    self.atualizar_log("Falha ao focar jogo. Tentando em 3s...")
                     time.sleep(3)
                     
             time.sleep(0.1)
